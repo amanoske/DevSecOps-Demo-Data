@@ -1,0 +1,108 @@
+# From: https://discuss.hashicorp.com/t/vault-agent-injector-acl-policy-wildcard/52595
+# Secret created:
+
+$ vault secrets enable -path=demo kv-v2
+$ vault kv put demo/dummy DEMO_SECRET="this is secret"
+
+# Enable k8s cluster to auth to Vault:
+
+$ vault auth enable -path=demo kubernetes
+
+$ vault policy write vault-agent-injector - <<EOF
+path "secret/metadata/demo/*" {
+  capabilities = ["read", "list"]
+}
+
+path "secret/data/demo/*" {
+  capabilities = ["read", "list"]
+}
+EOF
+
+$ vault write auth/demo/config \
+        token_reviewer_jwt="$TOKEN_REVIEW_JWT" \
+        kubernetes_host="$KUBE_HOST" \
+        kubernetes_ca_cert="$KUBE_CA_CERT" \
+        issuer="https://kubernetes.default.svc.cluster.local"
+
+$ vault write auth/demo/role/vault-agent-injector \
+        bound_service_account_names=vault-agent-injector \
+        bound_service_account_namespaces='*' \
+        policies=vault-agent-injector \
+        ttl=24h
+
+# K8s Pod Config
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo
+  namespace: vault
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo
+  template:
+    metadata:
+      labels:
+        app: demo
+      annotations:
+        vault.hashicorp.com/agent-inject: 'true'
+        vault.hashicorp.com/role: 'vault-agent-injector'
+        vault.hashicorp.com/agent-inject-secret-env: 'secret/demo'
+        vault.hashicorp.com/agent-inject-template-env: |
+          {{ with secret "secret/demo/dummy" }}
+            {{ range $key, $value := .Data.data }}
+              export {{ $key }}={{ $value }}
+            {{- end }}
+          {{- end }}
+    spec:
+      serviceAccountName: vault-agent-injector
+      containers:
+        - name: demo
+          image: alpine:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh",  "-c", "source /vault/secrets/env && sleep infinity"]
+
+# Sidecar Logs
+==> Vault Agent started! Log data will stream in below:
+
+2023-04-11T17:24:45.816Z [INFO]  agent.sink.file: creating file sink
+2023-04-11T17:24:45.816Z [INFO]  agent.sink.file: file sink configured: path=/home/vault/.vault-token mode=-rw-r-----
+==> Vault Agent configuration:
+
+           Api Address 1: http://bufconn
+                     Cgo: disabled
+               Log Level: info
+                 Version: Vault v1.13.1, built 2023-03-23T12:51:35Z
+             Version Sha: 4472e4a3fbcc984b7e3dc48f5a8283f3efe6f282
+
+2023-04-11T17:24:45.817Z [INFO]  agent.template.server: starting template server
+2023-04-11T17:24:45.817Z [INFO] (runner) creating new runner (dry: false, once: false)
+2023-04-11T17:24:45.818Z [INFO]  agent.auth.handler: starting auth handler
+2023-04-11T17:24:45.818Z [INFO]  agent.auth.handler: authenticating
+2023-04-11T17:24:45.818Z [INFO] (runner) creating watcher
+2023-04-11T17:24:45.818Z [INFO]  agent.sink.server: starting sink server
+2023-04-11T17:24:45.848Z [INFO]  agent.auth.handler: authentication successful, sending token to sinks
+2023-04-11T17:24:45.848Z [INFO]  agent.auth.handler: starting renewal process
+2023-04-11T17:24:45.848Z [INFO]  agent.sink.file: token written: path=/home/vault/.vault-token
+2023-04-11T17:24:45.849Z [INFO]  agent.sink.server: sink server stopped
+2023-04-11T17:24:45.849Z [INFO]  agent: sinks finished, exiting
+2023-04-11T17:24:45.848Z [INFO]  agent.template.server: template server received new token
+2023-04-11T17:24:45.849Z [INFO] (runner) stopping
+2023-04-11T17:24:45.849Z [INFO] (runner) creating new runner (dry: false, once: false)
+2023-04-11T17:24:45.849Z [INFO] (runner) creating watcher
+2023-04-11T17:24:45.849Z [INFO] (runner) starting
+2023-04-11T17:24:45.853Z [WARN] vault.read(secret/demo/dummy): failed to check if secret/demo/dummy is KVv2, assume not: Error making API request.
+
+URL: GET http://34.91.191.201:8200/v1/sys/internal/ui/mounts/secret/demo/dummy
+Code: 403. Errors:
+
+* preflight capability check returned 403, please ensure client's policies grant access to path "secret/demo/dummy/"
+2023-04-11T17:24:45.855Z [WARN] (view) vault.read(secret/demo/dummy): vault.read(secret/demo/dummy): Error making API request.
+
+URL: GET http://34.91.191.201:8200/v1/secret/demo/dummy
+Code: 403. Errors:
+
+* 1 error occurred:
+	* permission denied
