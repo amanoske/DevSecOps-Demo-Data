@@ -1,3 +1,4 @@
+# Original meta-file of all data from this investigation
 # From: https://discuss.hashicorp.com/t/vault-agent-injector-acl-policy-wildcard/52595
 # Secret created:
 
